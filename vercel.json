@@ -1,0 +1,13 @@
+{
+    "buildCommand": "cd DiagnoMed_AI-main && npm install && npm run build",
+    "outputDirectory": "DiagnoMed_AI-main/dist",
+    "installCommand": "cd DiagnoMed_AI-main && npm install",
+    "framework": "vite",
+    "rewrites": [
+        {
+            "source": "/(.*)",
+            "destination": "/"
+        }
+    ],
+    "ignoreCommand": "git diff --quiet HEAD^ HEAD ./DiagnoMed_AI-main/"
+}
