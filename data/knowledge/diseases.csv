@@ -31,7 +31,7 @@ D029,Hepatitis B,B16,Infectious,4,Severe liver infection caused by the HBV virus
 D030,Hepatitis C,B17.1,Infectious,4,Viral infection that causes liver inflammation.,-1
 D031,HIV/AIDS,B20,Infectious,5,Interferes with the body's ability to fight infection.,-1
 D032,Zika Virus,A92.5,Infectious,2,Mosquito-borne virus; risk to fetal development.,10
-D033,Ebola Virus Disease,A98.4,Infectious,5,Severe, often fatal illness in humans.,21
+D033,Ebola Virus Disease,A98.4,Infectious,5,"Severe, often fatal illness in humans.",21
 D034,Measles,B05,Infectious,3,Highly contagious infectious disease caused by virus.,12
 D035,Mumps,B26,Infectious,2,Viral infection that affects salivary glands.,14
 D036,Rubella,B06,Infectious,2,Contagious viral infection best known by its red rash.,10
