@@ -69,7 +69,8 @@ app.add_middleware(
     allow_origins=[
         "https://diagnomed-ai.vercel.app",  # Production frontend
         "http://localhost:5173",  # Local development
-        "http://localhost:3000",  # Alternative local port
+        "http://localhost:3000",# Alternative local port
+        "https://diagnomed-ai.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
