@@ -1,12 +1,13 @@
 """
-CNN Model loader for X-ray diagnosis using DenseNet121.
-Ported from DiagnoMed with enhancements for DDX integration.
+CNN Model integration using HuggingFace Spaces API.
+Calls the deployed model at yashganatra-ipd.hf.space for X-ray diagnosis.
 """
 import os
-import numpy as np
+import requests
+import json
+import mimetypes
 from pathlib import Path
-from typing import Optional, Dict, Tuple, List
-import cv2
+from typing import Optional, Dict, List
 
 from backend.config import settings
 from backend.utils.logging_config import get_logger
@@ -20,135 +21,221 @@ XRAY_LABELS = [
     "Pleural_Thickening", "Pneumonia", "Pneumothorax"
 ]
 
-# Model paths
-MODEL_DIR = settings.data_dir.parent / "models" / "cnn_model"
-MODEL_PATH = MODEL_DIR / "densenet.hdf5"
-HEATMAP_FOLDER = settings.data_dir.parent / "static" / "heatmaps"
-UPLOADS_FOLDER = settings.data_dir.parent / "static" / "uploads"
+# HuggingFace Space configuration
+HF_SPACE = "yashganatra-ipd"
+HF_BASE_URL = "https://yashganatra-ipd.hf.space"
 
 # Ensure directories exist
+HEATMAP_FOLDER = settings.data_dir.parent / "static" / "heatmaps"
+UPLOADS_FOLDER = settings.data_dir.parent / "static" / "uploads"
 HEATMAP_FOLDER.mkdir(parents=True, exist_ok=True)
 UPLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 
-# Global model instance
-_cnn_model = None
-_model_loaded = False
+logger.info(f"✅ Using HuggingFace Space: {HF_SPACE} -> {HF_BASE_URL}")
 
 
-def load_densenet_model():
-    """Load DenseNet121 model with pre-trained weights."""
-    global _cnn_model, _model_loaded
-    
-    if _model_loaded:
-        return _cnn_model
-    
-    try:
-        import tensorflow as tf
-        from tensorflow.keras.applications import DenseNet121
-        from tensorflow.keras.models import Model
-        
-        logger.info("Building DenseNet121 architecture...")
-        base_model = DenseNet121(weights=None, include_top=False, input_shape=(320, 320, 3))
-        x = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
-        x = tf.keras.layers.Dense(len(XRAY_LABELS), activation="sigmoid")(x)
-        model = Model(inputs=base_model.input, outputs=x)
-        
-        if MODEL_PATH.exists():
-            logger.info(f"Loading weights from: {MODEL_PATH}")
-            model.load_weights(str(MODEL_PATH), by_name=True, skip_mismatch=True)
-            logger.info("DenseNet weights loaded successfully")
-        else:
-            logger.warning(f"Model weights not found: {MODEL_PATH}")
-            logger.warning("CNN predictions will use random weights - download model for accurate results")
-        
-        _cnn_model = model
-        _model_loaded = True
-        return model
-        
-    except ImportError as e:
-        logger.error(f"TensorFlow not installed: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Could not load DenseNet model: {e}")
-        return None
-
-
-def generate_gradcam(
-    img_array: np.ndarray,
-    model,
-    original_image_path: Optional[str] = None,
-    last_conv_layer_name: str = "conv5_block16_concat"
-) -> Optional[str]:
+def call_huggingface_model(image_path: str) -> Optional[Dict]:
     """
-    Generate GradCAM heatmap for a preprocessed image array.
+    Call HuggingFace Space model API with multiple request patterns for compatibility.
     
     Args:
-        img_array: Preprocessed image (1, 320, 320, 3)
-        model: Loaded DenseNet model
-        original_image_path: Path to original image for overlay
-        last_conv_layer_name: Name of last conv layer for gradients
+        image_path: Path to X-ray image file
         
     Returns:
-        Path to saved GradCAM image, or None on failure
+        Dict with parsed prediction results or None on failure
+    """
+    url = HF_BASE_URL.rstrip("/") + "/run/predict"
+    mime = mimetypes.guess_type(image_path)[0] or "application/octet-stream"
+    
+    attempts = []
+    attempts_details = []
+    
+    # Pattern A: Gradio-style with data JSON + numbered file
+    try:
+        with open(image_path, "rb") as f:
+            files = {
+                "data": (None, json.dumps([None])),
+                "data_0": (os.path.basename(image_path), f, mime),
+            }
+            logger.info(f"📤 Posting to {url} using Pattern A (Gradio)...")
+            r = requests.post(url, files=files, timeout=60)
+            attempts.append((r.status_code, r.text[:1000]))
+            attempts_details.append({
+                "url": url,
+                "pattern": "A-Gradio",
+                "status": r.status_code,
+                "text": r.text[:5000]
+            })
+            if r.ok:
+                try:
+                    resp = r.json()
+                except Exception:
+                    resp = r.text
+                parsed = _parse_space_response(resp)
+                if parsed:
+                    logger.info(f"✅ Pattern A succeeded")
+                    return parsed
+    except Exception as e:
+        logger.warning(f"⚠️ Pattern A failed: {e}")
+    
+    # Pattern B: Simple file upload to /predict with 'image' key
+    try:
+        predict_url = HF_BASE_URL.rstrip("/") + "/predict"
+        with open(image_path, "rb") as f:
+            files = {"image": (os.path.basename(image_path), f, mime)}
+            logger.info(f"📤 Posting to {predict_url} using Pattern B (image key)...")
+            r = requests.post(predict_url, files=files, timeout=60)
+            attempts.append((r.status_code, r.text[:1000]))
+            attempts_details.append({
+                "url": predict_url,
+                "pattern": "B-image",
+                "status": r.status_code,
+                "text": r.text[:5000]
+            })
+            if r.ok:
+                try:
+                    resp = r.json()
+                except Exception:
+                    resp = r.text
+                parsed = _parse_space_response(resp)
+                if parsed:
+                    logger.info(f"✅ Pattern B (image) succeeded")
+                    return parsed
+    except Exception as e:
+        logger.warning(f"⚠️ Pattern B (image) failed: {e}")
+    
+    # Pattern C: Simple file upload to /predict with 'file' key
+    try:
+        predict_url = HF_BASE_URL.rstrip("/") + "/predict"
+        with open(image_path, "rb") as f:
+            files = {"file": (os.path.basename(image_path), f, mime)}
+            logger.info(f"📤 Posting to {predict_url} using Pattern C (file key)...")
+            r = requests.post(predict_url, files=files, timeout=60)
+            attempts.append((r.status_code, r.text[:1000]))
+            attempts_details.append({
+                "url": predict_url,
+                "pattern": "C-file",
+                "status": r.status_code,
+                "text": r.text[:5000]
+            })
+            if r.ok:
+                try:
+                    resp = r.json()
+                except Exception:
+                    resp = r.text
+                parsed = _parse_space_response(resp)
+                if parsed:
+                    logger.info(f"✅ Pattern C (file) succeeded")
+                    return parsed
+    except Exception as e:
+        logger.warning(f"⚠️ Pattern C (file) failed: {e}")
+    
+    # Pattern D: Fallback to /run/predict with 'file' key
+    try:
+        with open(image_path, "rb") as f:
+            files = {"file": (os.path.basename(image_path), f, mime)}
+            logger.info(f"📤 Posting to {url} using Pattern D (fallback)...")
+            r = requests.post(url, files=files, timeout=60)
+            attempts.append((r.status_code, r.text[:1000]))
+            attempts_details.append({
+                "url": url,
+                "pattern": "D-fallback",
+                "status": r.status_code,
+                "text": r.text[:5000]
+            })
+            if r.ok:
+                try:
+                    resp = r.json()
+                except Exception:
+                    resp = r.text
+                parsed = _parse_space_response(resp)
+                if parsed:
+                    logger.info(f"✅ Pattern D succeeded")
+                    return parsed
+    except Exception as e:
+        logger.warning(f"⚠️ Pattern D failed: {e}")
+    
+    logger.error(f"❌ All HTTP attempts failed. Attempts summary: {attempts}")
+    return {"_error": "all_attempts_failed", "attempts": attempts_details}
+
+
+def _parse_space_response(resp) -> Optional[Dict]:
+    """
+    Normalize different HuggingFace Space response shapes into expected dict.
+    
+    Args:
+        resp: Response from HF Space (dict, list, or string)
+        
+    Returns:
+        Normalized dict with top_label, top_confidence, top3, gradcam_url
     """
     try:
-        import tensorflow as tf
-        from tensorflow.keras.models import Model
+        # Debug: Log raw response
+        logger.info(f"🔍 Raw HF Space response type: {type(resp)}")
+        logger.info(f"🔍 Raw HF Space response: {str(resp)[:500]}")
         
-        grad_model = Model(
-            inputs=model.input,
-            outputs=[model.get_layer(last_conv_layer_name).output, model.output]
-        )
+        # If response is a list, prefer first element
+        if isinstance(resp, list) and len(resp) > 0:
+            data = resp[0]
+        elif isinstance(resp, dict):
+            # Some spaces return {'data': [...]}
+            if "data" in resp and isinstance(resp["data"], list) and len(resp["data"]) > 0:
+                data = resp["data"][0]
+            else:
+                data = resp
+        else:
+            return None
         
-        with tf.GradientTape() as tape:
-            conv_outputs, predictions = grad_model(img_array)
-            pred_index = tf.argmax(predictions[0])
-            loss = predictions[:, pred_index]
+        logger.info(f"🔍 Parsed data: {data}")
         
-        grads = tape.gradient(loss, conv_outputs)
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        # data should be a dict with 'predictions' key
+        predictions = None
+        gradcam_url = None
+        if isinstance(data, dict):
+            predictions = data.get("predictions") or data.get("prediction") or data.get("preds")
+            gradcam_url = data.get("gradcam_url") or data.get("gradcam") or data.get("heatmap_url")
         
-        conv_outputs = conv_outputs[0].numpy()
-        pooled_grads = pooled_grads.numpy()
+        logger.info(f"🔍 GradCAM URL from HF Space: {gradcam_url}")
         
-        heatmap = np.mean(conv_outputs * pooled_grads, axis=-1)
-        heatmap = np.maximum(heatmap, 0)
-        if np.max(heatmap) > 0:
-            heatmap /= np.max(heatmap)
+        if not predictions:
+            return None
         
-        # Resize and colorize
-        heatmap = cv2.resize(heatmap, (224, 224))
-        heatmap = np.uint8(255 * heatmap)
-        heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+        # Convert mapping to list of tuples if necessary
+        if isinstance(predictions, dict):
+            sorted_preds = sorted(predictions.items(), key=lambda x: x[1], reverse=True)[:3]
+        elif isinstance(predictions, list):
+            # already list of (label, score) pairs
+            sorted_preds = predictions[:3]
+        else:
+            return None
         
-        # Overlay on original if available
-        if original_image_path and Path(original_image_path).exists():
-            original = cv2.imread(original_image_path)
-            if original is not None:
-                original = cv2.resize(original, (224, 224))
-                superimposed = cv2.addWeighted(original, 0.6, heatmap_colored, 0.4, 0)
-                
-                # Save GradCAM
-                gradcam_filename = Path(original_image_path).stem + "_gradcam.jpg"
-                gradcam_path = HEATMAP_FOLDER / gradcam_filename
-                cv2.imwrite(str(gradcam_path), superimposed)
-                logger.info(f"GradCAM saved: {gradcam_path}")
-                return str(gradcam_path)
+        top_label, top_confidence = sorted_preds[0]
         
-        # Save heatmap only
-        heatmap_filename = f"heatmap_{np.random.randint(10000)}.jpg"
-        heatmap_path = HEATMAP_FOLDER / heatmap_filename
-        cv2.imwrite(str(heatmap_path), heatmap_colored)
-        return str(heatmap_path)
+        # Make gradcam URL absolute if needed
+        gradcam_full = None
+        if gradcam_url:
+            if not str(gradcam_url).startswith("http"):
+                gradcam_full = HF_BASE_URL.rstrip("/") + "/" + str(gradcam_url).lstrip("/")
+            else:
+                gradcam_full = gradcam_url
+            logger.info(f"✅ Final GradCAM URL: {gradcam_full}")
+        else:
+            logger.warning("⚠️ No GradCAM URL found in response")
         
+        return {
+            "top_label": top_label,
+            "top_confidence": float(top_confidence),
+            "top3": sorted_preds,
+            "gradcam_url": gradcam_full,
+        }
     except Exception as e:
-        logger.error(f"GradCAM generation failed: {e}")
+        logger.error(f"⚠️ Error parsing response: {e}")
         return None
 
 
 def predict_xray(image_path: str) -> Dict:
     """
-    Run X-ray prediction using DenseNet121.
+    Run X-ray prediction using HuggingFace Space model.
     
     Args:
         image_path: Path to X-ray image file
@@ -157,55 +244,55 @@ def predict_xray(image_path: str) -> Dict:
         Dict with prediction results:
         - predicted_label: Top predicted condition
         - confidence: Confidence score (0-1)
-        - all_predictions: List of (label, probability) for all 14 conditions
-        - gradcam_path: Path to GradCAM visualization
+        - all_predictions: List of (label, probability) for top conditions
+        - gradcam_path: URL to GradCAM visualization (from HF Space)
     """
-    model = load_densenet_model()
-    
-    if model is None:
-        return {
-            "predicted_label": "Model Not Available",
-            "confidence": 0.0,
-            "all_predictions": [],
-            "gradcam_path": None,
-            "error": "TensorFlow/model not loaded"
-        }
-    
     try:
-        import tensorflow as tf
-        from tensorflow.keras.applications.densenet import preprocess_input
+        logger.info(f"🔬 Running X-ray prediction for: {image_path}")
+        prediction = call_huggingface_model(image_path)
         
-        # Load and preprocess image
-        img = tf.keras.preprocessing.image.load_img(image_path, target_size=(320, 320))
-        img_array = tf.keras.preprocessing.image.img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = preprocess_input(img_array)
+        # Check for failure
+        if isinstance(prediction, dict) and prediction.get("_error") == "all_attempts_failed":
+            logger.error(f"❌ Model HTTP attempts failed: {prediction.get('attempts')}")
+            return {
+                "predicted_label": "Model Not Available",
+                "confidence": 0.0,
+                "all_predictions": [],
+                "gradcam_path": None,
+                "error": "HuggingFace Space API unavailable"
+            }
         
-        # Predict
-        predictions = model.predict(img_array, verbose=0)
-        pred_index = int(np.argmax(predictions[0]))
-        confidence = float(predictions[0][pred_index])
-        predicted_label = XRAY_LABELS[pred_index] if pred_index < len(XRAY_LABELS) else "Unknown"
+        if not prediction:
+            return {
+                "predicted_label": "Model Not Available",
+                "confidence": 0.0,
+                "all_predictions": [],
+                "gradcam_path": None,
+                "error": "Model inference failed"
+            }
         
-        # Get all predictions sorted by probability
-        all_preds = [(XRAY_LABELS[i], float(predictions[0][i])) 
-                     for i in range(len(XRAY_LABELS))]
-        all_preds.sort(key=lambda x: x[1], reverse=True)
+        # Validate expected keys
+        if not all(k in prediction for k in ("top_label", "top_confidence", "top3")):
+            logger.error(f"❌ Unexpected prediction shape: {prediction}")
+            return {
+                "predicted_label": "Error",
+                "confidence": 0.0,
+                "all_predictions": [],
+                "gradcam_path": None,
+                "error": "Unexpected model response"
+            }
         
-        # Generate GradCAM
-        gradcam_path = generate_gradcam(img_array, model, image_path)
-        
-        logger.info(f"X-ray prediction: {predicted_label} ({confidence:.2%})")
+        logger.info(f"✅ X-ray prediction: {prediction['top_label']} ({prediction['top_confidence']:.2%})")
         
         return {
-            "predicted_label": predicted_label,
-            "confidence": confidence,
-            "all_predictions": all_preds[:5],  # Top 5
-            "gradcam_path": gradcam_path
+            "predicted_label": prediction["top_label"],
+            "confidence": prediction["top_confidence"],
+            "all_predictions": prediction["top3"],
+            "gradcam_path": prediction.get("gradcam_url")
         }
         
     except Exception as e:
-        logger.error(f"X-ray prediction error: {e}")
+        logger.error(f"❌ X-ray prediction error: {e}")
         return {
             "predicted_label": "Error",
             "confidence": 0.0,

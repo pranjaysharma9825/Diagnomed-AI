@@ -42,28 +42,10 @@ export default function Navbar() {
               Dashboard
             </Link>
             <Link
-              to="/patients"
+              to="/cases"
               className="text-gray-600 hover:text-blue-600 dark:text-text-light dark:hover:text-primary"
             >
-              Patients
-            </Link>
-            <Link
-              to="/diagnostics"
-              className="text-gray-600 hover:text-blue-600 dark:text-text-light dark:hover:text-primary"
-            >
-              Diagnostics
-            </Link>
-            <Link
-              to="/history"
-              className="text-gray-600 hover:text-blue-600 dark:text-text-light dark:hover:text-primary"
-            >
-              History
-            </Link>
-            <Link
-              to="/evaluation"
-              className="text-gray-600 hover:text-blue-600 dark:text-text-light dark:hover:text-primary"
-            >
-              Evaluation
+              Case Review
             </Link>
           </nav>
 
@@ -118,7 +100,8 @@ export default function Navbar() {
             Login
           </Link>
         </nav>
-      )}
+      )
+      }
     </header>
   );
 }

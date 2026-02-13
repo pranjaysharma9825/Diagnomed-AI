@@ -12,6 +12,7 @@ import sys
 import json
 import uuid
 import shutil
+import datetime
 from pathlib import Path
 
 # Add backend to path
@@ -298,9 +299,9 @@ async def submit_patient_case(
                 cnn_confidence = result.get("confidence", 0.0)
                 cnn_all_preds = json.dumps(result.get("all_predictions", []))
                 
+                # GradCAM URL is already a full URL from HuggingFace Space
                 if result.get("gradcam_path"):
-                    gradcam_filename = Path(result["gradcam_path"]).name
-                    gradcam_url = f"/static/heatmaps/{gradcam_filename}"
+                    gradcam_url = result["gradcam_path"]
             except Exception as e:
                 app_logger.warning(f"CNN prediction failed: {e}")
                 cnn_output = "Model unavailable"
@@ -389,11 +390,26 @@ async def submit_patient_case(
         
         app_logger.info(f"Patient case created: {case_id}")
         
+        # Format predictions as dictionary for frontend display
+        predictions_dict = {}
+        if cnn_all_preds:
+            try:
+                all_preds_list = json.loads(cnn_all_preds)
+                for label, score in all_preds_list[:5]:  # Top 5
+                    predictions_dict[label] = round(score, 2)
+            except:
+                pass
+        
         return {
             "success": True,
             "case_id": case_id,
             "cnn_output": cnn_output,
+            "cnn_confidence": cnn_confidence,
+            "predictions": predictions_dict,  # Dictionary format: {'Pneumonia': 0.39, 'Edema': 0.23, ...}
+            "gradcam_url": gradcam_url,
+            "image_url": image_url,
             "ddx_candidates": ddx_candidates[:3] if ddx_candidates else [],
+            "analysis_output": analysis_output,
             "message": "Case submitted and analyzed"
         }
         
@@ -435,6 +451,59 @@ async def get_case_detail(case_id: str):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+
+
+class DoctorReviewRequest(BaseModel):
+    verification_status: str
+    doctor_notes: Optional[str] = None
+
+
+@app.post("/api/doctor/cases/{case_id}/review")
+async def review_case(case_id: str, request: DoctorReviewRequest):
+    """Update case with doctor's review."""
+    db = SessionLocal()
+    try:
+        case = db.query(PatientCase).filter(PatientCase.id == case_id).first()
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        case.verification_status = request.verification_status
+        case.doctor_notes = request.doctor_notes
+        case.status = "reviewed"
+        case.updated_at = datetime.datetime.utcnow()
+        
+        db.commit()
+        return {"success": True, "message": "Case reviewed successfully"}
+    except Exception as e:
+        db.rollback()
+        app_logger.error(f"Error reviewing case: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.get("/api/proxy/gradcam")
+async def proxy_gradcam(url: str):
+    """
+    Proxy endpoint to fetch GradCAM images from HuggingFace Space.
+    This avoids CORS issues when displaying external images.
+    """
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=30.0)
+            if response.status_code == 200:
+                from fastapi.responses import Response
+                return Response(
+                    content=response.content,
+                    media_type=response.headers.get("content-type", "image/jpeg")
+                )
+            else:
+                raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
+    except Exception as e:
+        app_logger.error(f"Error proxying GradCAM: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/doctor/stats")
@@ -485,6 +554,55 @@ async def get_doctor_stats():
             "completed_reports": 0,
             "activity_change": "0%"
         }
+    finally:
+        db.close()
+
+
+
+@app.get("/api/doctor/stats/trends")
+async def get_patient_trends():
+    """Get patient count trends for the last 7 days."""
+    db = SessionLocal()
+    try:
+        from sqlalchemy import func
+        from datetime import datetime, timedelta
+        
+        # Get data for last 7 days
+        today = datetime.utcnow().date()
+        start_date = today - timedelta(days=6)
+        
+        # SQLite 'date' function extracts YYYY-MM-DD from timestamp
+        # Note: func.date() works for SQLite. For Postgres use func.date() or similar.
+        results = db.query(
+            func.date(PatientCase.created_at).label("date_str"),
+            func.count(PatientCase.id).label("count")
+        ).filter(
+            PatientCase.created_at >= start_date
+        ).group_by(
+            func.date(PatientCase.created_at)
+        ).all()
+        
+        # Map results: { '2023-01-01': 5, ... }
+        counts_map = {r.date_str: r.count for r in results}
+        
+        # Prepare final list with 0-filling
+        data = []
+        for i in range(7):
+            d = start_date + timedelta(days=i)
+            d_str = d.strftime("%Y-%m-%d")
+            # Label format: "Mon" or "Jan 01"
+            label = d.strftime("%b %d")
+            
+            data.append({
+                "date": label,
+                "patients": counts_map.get(d_str, 0)
+            })
+            
+        return data  # Returns list of {date, patients}
+        
+    except Exception as e:
+        app_logger.error(f"Error fetching trends: {e}")
+        return []
     finally:
         db.close()
 
@@ -690,6 +808,78 @@ class StartDiagnosisRequest(BaseModel):
     month: int = None  # For seasonal patterns (1-12)
     family_history: List[str] = []  # Disease IDs in family history
     genetic_variants: List[str] = []  # Genetic variant IDs (e.g., rs1800562)
+    # CNN X-ray predictions (from HuggingFace Space)
+    cnn_predictions: Optional[Dict[str, float]] = None  # e.g. {"Pneumonia": 0.45, "Hernia": 0.23}
+    case_id: Optional[str] = None  # Link to patient case in DB
+    image_url: Optional[str] = None  # X-ray image URL
+    gradcam_url: Optional[str] = None  # GradCAM heatmap URL
+
+# Mapping from CNN X-ray labels to disease IDs in our knowledge base
+CNN_LABEL_TO_DISEASE_ID = {
+    "Atelectasis": "D051",       # Maps to COPD (closest respiratory)
+    "Cardiomegaly": "D013",     # Maps to Coronary Artery Disease
+    "Effusion": "D017",         # Maps to Pneumonia (pleural effusion)
+    "Infiltration": "D017",     # Maps to Pneumonia
+    "Mass": "D077",             # Maps to Lung Cancer
+    "Nodule": "D077",           # Maps to Lung Cancer
+    "Pneumonia": "D017",        # Maps to Pneumonia
+    "Pneumothorax": "D051",     # Maps to COPD (closest)
+    "Consolidation": "D017",    # Maps to Pneumonia
+    "Edema": "D013",            # Maps to Coronary Artery Disease
+    "Emphysema": "D051",        # Maps to COPD
+    "Fibrosis": "D053",         # Maps to Pulmonary Fibrosis
+    "Pleural_Thickening": "D017",  # Maps to Pneumonia
+    "Hernia": "D014",           # Maps to GERD (Hiatal Hernia common cause)
+    "No Finding": None,         # No disease
+}
+
+# Cache for loaded disease tests
+_disease_tests_cache = None
+
+def _load_disease_tests():
+    """Load test definitions from tests.csv and map them to diseases."""
+    global _disease_tests_cache
+    if _disease_tests_cache is not None:
+        return _disease_tests_cache
+    
+    import pandas as pd
+    tests_path = settings.knowledge_dir / "tests.csv"
+    disease_tests = {}
+    
+    if tests_path.exists():
+        try:
+            df = pd.read_csv(tests_path)
+            for _, row in df.iterrows():
+                test_obj = {
+                    "test_id": row["test_id"],
+                    "name": row["name"],
+                    "cost_usd": float(row.get("cost_usd", 0)),
+                    "sensitivity": float(row.get("sensitivity", 0.80)),
+                    "specificity": float(row.get("specificity", 0.90)),
+                }
+                # diseases_detected can be a comma-separated list like "D009,D017"
+                diseases_str = str(row.get("diseases_detected", ""))
+                disease_ids = [d.strip() for d in diseases_str.split(",") if d.strip()]
+                for did in disease_ids:
+                    if did not in disease_tests:
+                        disease_tests[did] = []
+                    disease_tests[did].append(test_obj.copy())
+            app_logger.info(f"Loaded {len(df)} tests for {len(disease_tests)} diseases from tests.csv")
+        except Exception as e:
+            app_logger.warning(f"Failed to load tests.csv: {e}")
+    else:
+        app_logger.warning(f"tests.csv not found at {tests_path}, using fallback")
+    
+    # Fallback: ensure at least some basic tests exist
+    if not disease_tests:
+        disease_tests = {
+            "D001": [{"test_id": "T001", "name": "NS1 Antigen Test", "cost_usd": 25, "sensitivity": 0.90, "specificity": 0.95}],
+            "D002": [{"test_id": "T005", "name": "Rapid Flu Test", "cost_usd": 30, "sensitivity": 0.70, "specificity": 0.95}],
+            "D003": [{"test_id": "T002", "name": "HbA1c Test", "cost_usd": 15, "sensitivity": 0.85, "specificity": 0.92}],
+        }
+    
+    _disease_tests_cache = disease_tests
+    return disease_tests
 
 class TestResultRequest(BaseModel):
     test_id: str
@@ -756,6 +946,63 @@ async def start_diagnosis_session(request: StartDiagnosisRequest):
                     c['base_probability'] = min(c['base_probability'] * 1.5, 0.95)
                     contextual_factors["family_history_applied"] = True
         
+        # 4. Apply CNN X-ray prediction boost
+        cnn_applied = False
+        if request.cnn_predictions:
+            app_logger.info(f"Applying CNN predictions to candidates: {request.cnn_predictions}")
+            
+            # Build a set of disease_ids that CNN labels map to
+            cnn_disease_boosts = {}  # disease_id -> max CNN confidence for that disease
+            for cnn_label, cnn_confidence in request.cnn_predictions.items():
+                disease_id = CNN_LABEL_TO_DISEASE_ID.get(cnn_label)
+                if disease_id and cnn_confidence > 0.05:  # Only consider meaningful predictions
+                    if disease_id not in cnn_disease_boosts or cnn_confidence > cnn_disease_boosts[disease_id]:
+                        cnn_disease_boosts[disease_id] = cnn_confidence
+            
+            app_logger.info(f"CNN disease boosts: {cnn_disease_boosts}")
+            
+            # Boost existing candidates that match CNN predictions
+            for c in candidates:
+                if c['disease_id'] in cnn_disease_boosts:
+                    boost = cnn_disease_boosts[c['disease_id']]
+                    # Bayesian-style: heavier boost for high CNN confidence
+                    # A CNN confidence of 0.5 gives ~1.5x boost, 0.8 gives ~2.6x boost
+                    multiplier = 1.0 + (boost * 3.0)
+                    c['base_probability'] = min(c['base_probability'] * multiplier, 0.95)
+                    c['cnn_boost'] = round(boost, 3)
+                    c['cnn_label'] = next(label for label, did in CNN_LABEL_TO_DISEASE_ID.items() if did == c['disease_id'])
+                    cnn_applied = True
+                    app_logger.info(f"  Boosted {c['name']} by {multiplier:.2f}x (CNN: {c['cnn_label']} = {boost:.2f})")
+            
+            # Add new candidates for CNN diseases not yet in the list
+            existing_disease_ids = {c['disease_id'] for c in candidates}
+            for disease_id, boost in cnn_disease_boosts.items():
+                if disease_id not in existing_disease_ids and boost > 0.10:
+                    # Add this disease as a new candidate
+                    mapper = get_symptom_disease_mapper()
+                    disease_info = mapper.get_disease(disease_id)
+                    if disease_info:
+                        new_candidate = {
+                            "disease_id": disease_id,
+                            "name": disease_info.get('name', 'Unknown'),
+                            "category": disease_info.get('category', 'Unknown'),
+                            "severity": disease_info.get('severity', 3),
+                            "base_probability": boost * 0.5,  # Use CNN confidence scaled down
+                            "raw_score": boost,
+                            "matching_symptoms": 0,
+                            "total_symptoms": len(request.symptoms),
+                            "cnn_boost": round(boost, 3),
+                            "cnn_label": next(label for label, did in CNN_LABEL_TO_DISEASE_ID.items() if did == disease_id),
+                            "added_by_cnn": True,
+                        }
+                        candidates.append(new_candidate)
+                        cnn_applied = True
+                        app_logger.info(f"  Added new CNN candidate: {new_candidate['name']} (prob={new_candidate['base_probability']:.3f})")
+            
+            contextual_factors["cnn_applied"] = cnn_applied
+            if request.cnn_predictions:
+                contextual_factors["cnn_top_prediction"] = max(request.cnn_predictions, key=request.cnn_predictions.get)
+        
         # Re-normalize probabilities after all modifiers
         total_prob = sum(c['base_probability'] for c in candidates)
         if total_prob > 0:
@@ -765,37 +1012,8 @@ async def start_diagnosis_session(request: StartDiagnosisRequest):
         # Sort by probability
         candidates.sort(key=lambda x: x['base_probability'], reverse=True)
         
-        # Define available tests for each disease
-        disease_tests = {
-            "D001": [  # Dengue
-                {"test_id": "T001", "name": "NS1 Antigen Test", "cost_usd": 25, "sensitivity": 0.85, "specificity": 0.95},
-                {"test_id": "T002", "name": "Dengue IgM/IgG", "cost_usd": 35, "sensitivity": 0.90, "specificity": 0.85},
-                {"test_id": "T003", "name": "Platelet Count", "cost_usd": 10, "sensitivity": 0.75, "specificity": 0.65},
-            ],
-            "D002": [  # Malaria
-                {"test_id": "T004", "name": "Blood Smear", "cost_usd": 15, "sensitivity": 0.90, "specificity": 0.98},
-                {"test_id": "T005", "name": "Rapid Malaria Test", "cost_usd": 20, "sensitivity": 0.85, "specificity": 0.90},
-            ],
-            "D003": [  # Typhoid
-                {"test_id": "T006", "name": "Widal Test", "cost_usd": 15, "sensitivity": 0.70, "specificity": 0.80},
-                {"test_id": "T007", "name": "Blood Culture", "cost_usd": 50, "sensitivity": 0.85, "specificity": 0.98},
-            ],
-            "D004": [  # Influenza
-                {"test_id": "T008", "name": "Rapid Flu Test", "cost_usd": 30, "sensitivity": 0.70, "specificity": 0.95},
-                {"test_id": "T009", "name": "PCR Respiratory Panel", "cost_usd": 150, "sensitivity": 0.98, "specificity": 0.99},
-            ],
-            "D005": [  # Pneumonia
-                {"test_id": "T010", "name": "Chest X-Ray", "cost_usd": 50, "sensitivity": 0.80, "specificity": 0.85},
-                {"test_id": "T011", "name": "Sputum Culture", "cost_usd": 40, "sensitivity": 0.75, "specificity": 0.95},
-            ],
-            "D006": [  # COVID-19
-                {"test_id": "T012", "name": "RT-PCR COVID", "cost_usd": 60, "sensitivity": 0.95, "specificity": 0.99},
-                {"test_id": "T013", "name": "Rapid Antigen Test", "cost_usd": 20, "sensitivity": 0.80, "specificity": 0.97},
-            ],
-            "D007": [  # Common Cold
-                {"test_id": "T014", "name": "Clinical Exam Only", "cost_usd": 0, "sensitivity": 0.90, "specificity": 0.60},
-            ],
-        }
+        # Load tests dynamically from tests.csv (covers ALL diseases)
+        disease_tests = _load_disease_tests()
         
         # Get recommended tests based on top candidates
         recommended_tests = []
@@ -811,6 +1029,7 @@ async def start_diagnosis_session(request: StartDiagnosisRequest):
         # Store session
         _diagnostic_sessions[session_id] = {
             "session_id": session_id,
+            "case_id": request.case_id,  # Link to patient case in DB
             "symptoms": request.symptoms,
             "region": request.region,
             "candidates": candidates,
@@ -821,6 +1040,9 @@ async def start_diagnosis_session(request: StartDiagnosisRequest):
             "status": "in_progress",
             "disease_tests": disease_tests,
             "contextual_factors": contextual_factors,  # Track what modifiers were applied
+            "cnn_predictions": request.cnn_predictions,  # Store CNN data for reference
+            "image_url": request.image_url,
+            "gradcam_url": request.gradcam_url,
         }
         
         app_logger.info(f"Started diagnostic session: {session_id}")
@@ -955,6 +1177,74 @@ async def submit_test_result(session_id: str, request: TestResultRequest):
         "status": session["status"],
         "message": f"Probabilities updated based on {test['name']} result"
     }
+
+
+# ============================================================================
+# Database Persistence Helper
+# ============================================================================
+def save_case_to_db(session: dict, treatment: dict, report: dict):
+    """Save completed diagnostic session to database."""
+    try:
+        db = SessionLocal()
+        
+        # Prepare data
+        symptoms_str = ", ".join(session.get("symptoms", []))
+        
+        candidates_json = json.dumps(session.get("candidates", []))
+        cnn_predictions_json = json.dumps(session.get("cnn_predictions", {})) if session.get("cnn_predictions") else None
+        
+        # Extract top diagnosis
+        top_candidate = session["candidates"][0] if session["candidates"] else None
+        
+        # Prepare treatment string
+        treatment_str = ""
+        if treatment:
+             treatment_str = "\n\n**Recommended Treatment:**\n" + treatment.get("summary", "No summary available.")
+
+        # Create new case
+        new_case = PatientCase(
+            id=session.get("session_id", str(uuid.uuid4())),
+            patient_name=session.get("patient_name", "Anonymous Patient"),
+            age=session.get("age"),
+            sex=session.get("gender"),
+            region=session.get("region", "Global"),
+            symptoms=symptoms_str,
+            
+            # Image data
+            image_url=session.get("image_url"),
+            gradcam_url=session.get("gradcam_url"),
+            
+            # CNN data
+            cnn_output=max(session["cnn_predictions"], key=session["cnn_predictions"].get) if session.get("cnn_predictions") else None,
+            cnn_confidence=max(session["cnn_predictions"].values()) if session.get("cnn_predictions") else None,
+            cnn_all_predictions=cnn_predictions_json,
+            
+            # DDX data
+            ddx_candidates=candidates_json,
+            ddx_final_diagnosis=top_candidate["name"] if top_candidate else None,
+            ddx_confidence=top_candidate["base_probability"] if top_candidate else None,
+            
+            # Analysis output
+            analysis_output=(report.get("final_diagnosis", {}).get("disease", "Inconclusive") + 
+                            f" ({int(report.get('final_diagnosis', {}).get('probability', 0)*100)}%)" +
+                            "\n\n" + 
+                            "\n".join([f"- {item['factor']}" for item in report.get("trustworthiness", {}).get("evidence", []) if item.get('type') == 'symptom']) +
+                            treatment_str),
+            
+            status="analyzed",
+            created_at=datetime.datetime.utcnow()
+        )
+        
+        db.add(new_case)
+        db.commit()
+        app_logger.info(f"Saved case to database: {new_case.id}")
+        return new_case.id
+        
+    except Exception as e:
+        app_logger.error(f"Failed to save case to DB: {e}")
+        return None
+    finally:
+        db.close()
 
 
 @app.get("/api/diagnosis/{session_id}/result")
@@ -1094,8 +1384,23 @@ async def get_diagnosis_result(session_id: str, contraindications: Optional[str]
         "differential": [
             {"name": c["name"], "probability": c["base_probability"]}
             for c in session["candidates"][:5]
-        ]
+        ],
+        "trustworthiness": {
+            "confidence_score": round(confidence_score, 2),
+            "confidence_level": confidence_level,
+            "evidence": evidence,
+            "reasoning_chain": reasoning_chain,
+            "uncertainty_factors": uncertainty_factors,
+            "similar_cases": similar_cases,
+            "explainability_score": min(0.95, 0.5 + (len(evidence) * 0.05) + (len(reasoning_chain) * 0.05))
+        }
     }
+    
+    # Save case logic - ensure it only saves once if already complete?
+    # For now, simplistic save on every result fetch if status != completed
+    if session.get("status") != "saved":
+        save_case_to_db(session, treatment, report)
+        session["status"] = "saved"
     
     return {
         "session_id": session_id,
@@ -1105,17 +1410,7 @@ async def get_diagnosis_result(session_id: str, contraindications: Optional[str]
         "total_cost": session["total_cost"],
         "treatment": treatment,
         "status": "complete",
-        # Trustworthiness features
-        "trustworthiness": {
-            "confidence_score": round(confidence_score, 2),
-            "confidence_level": confidence_level,
-            "evidence": evidence,
-            "reasoning_chain": reasoning_chain,
-            "uncertainty_factors": uncertainty_factors,
-            "similar_cases": similar_cases,
-            "explainability_score": min(0.95, 0.5 + (len(evidence) * 0.05) + (len(reasoning_chain) * 0.05))
-        },
-        # Comprehensive report
+        "trustworthiness": report["trustworthiness"],
         "report": report
     }
 

@@ -60,6 +60,10 @@ class PatientCase(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     status = Column(String(20), default="pending")  # pending, analyzed, reviewed
     
+    # Doctor Review
+    doctor_notes = Column(Text, nullable=True)
+    verification_status = Column(String(20), default="pending")  # pending, approved, rejected
+    
     def to_dict(self) -> Dict:
         """Convert to dictionary for API response."""
         return {
@@ -80,6 +84,8 @@ class PatientCase(Base):
             "ddx_confidence": self.ddx_confidence,
             "analysis_output": self.analysis_output,
             "status": self.status,
+            "verification_status": self.verification_status,
+            "doctor_notes": self.doctor_notes,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

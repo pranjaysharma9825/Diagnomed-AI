@@ -50,10 +50,10 @@ export default function Dashboard() {
         {/* Right: Navigation Button */}
         <div className="mt-4 md:mt-0">
           <Link
-            to="/NewDiagnosis"
+            to="/cases"
             className="inline-block px-5 py-3 rounded-lg !bg-blue-600 hover:!bg-blue-700 !text-white font-medium shadow transition"
           >
-            View Patients
+            View Cases
           </Link>
         </div>
       </header>

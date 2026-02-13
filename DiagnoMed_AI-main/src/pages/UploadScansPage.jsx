@@ -42,12 +42,27 @@ export default function UploadScansPage() {
       const data = await res.json();
       if (res.ok) {
         setStatus("✅ Analysis complete!");
-        localStorage.removeItem("symptoms");
+        // Store CNN data and case_id for the diagnosis flow
         localStorage.setItem("lastCaseId", data.case_id);
         localStorage.setItem("lastAnalysis", JSON.stringify(data));
-        // Navigate to results page
+
+        // Save CNN predictions for diagnosis-flow to use
+        if (data.predictions && Object.keys(data.predictions).length > 0) {
+          localStorage.setItem("cnnPredictions", JSON.stringify(data.predictions));
+        }
+        if (data.image_url) {
+          localStorage.setItem("imageUrl", data.image_url);
+        }
+        if (data.gradcam_url) {
+          localStorage.setItem("gradcamUrl", data.gradcam_url);
+        }
+        if (data.case_id) {
+          localStorage.setItem("diagnosisCaseId", data.case_id);
+        }
+
+        // Navigate to interactive diagnosis flow (not patient-history)
         setTimeout(() => {
-          navigate("/patient-history");
+          navigate("/diagnosis-flow");
         }, 500);
       } else {
         setStatus("❌ Error: " + (data.error || data.detail || "Something went wrong"));
@@ -82,11 +97,17 @@ export default function UploadScansPage() {
       const data = await res.json();
       if (res.ok) {
         setStatus("✅ Analysis complete!");
-        localStorage.removeItem("symptoms");
         localStorage.setItem("lastCaseId", data.case_id);
         localStorage.setItem("lastAnalysis", JSON.stringify(data));
+        // Clear any stale CNN data since this is symptom-only
+        localStorage.removeItem("cnnPredictions");
+        localStorage.removeItem("imageUrl");
+        localStorage.removeItem("gradcamUrl");
+        localStorage.removeItem("diagnosisCaseId");
+        localStorage.removeItem("diagnosisSessionId");
+        // Navigate to interactive diagnosis flow
         setTimeout(() => {
-          navigate("/patient-history");
+          navigate("/diagnosis-flow");
         }, 500);
       } else {
         setStatus("❌ Error: " + (data.error || data.detail || "Something went wrong"));

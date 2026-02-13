@@ -1,0 +1,60 @@
+{
+  "timestamp": "2026-02-14T01:24:17.187060",
+  "accuracy": {
+    "total_cases": 100,
+    "correct_cases": 95,
+    "top1_accuracy": 0.95,
+    "top3_accuracy": 0.95
+  },
+  "cost": {
+    "total_cost_usd": 16175,
+    "avg_cost_per_case": 161.75,
+    "median_cost": 150
+  },
+  "efficiency": {
+    "avg_tests_per_case": 2.27,
+    "avg_iterations": 1.87,
+    "avg_time_ms": 1780.69
+  },
+  "calibration": {
+    "avg_confidence_correct": 0.8297,
+    "avg_confidence_incorrect": 0.6446
+  },
+  "pareto_frontier": [
+    {
+      "config": "budget_$25",
+      "accuracy": 0.9231,
+      "avg_cost": 20.0,
+      "avg_tests": 1.0,
+      "n_cases": 13
+    },
+    {
+      "config": "budget_$50",
+      "accuracy": 0.95,
+      "avg_cost": 30.0,
+      "avg_tests": 1.1,
+      "n_cases": 20
+    },
+    {
+      "config": "budget_$100",
+      "accuracy": 0.9302,
+      "avg_cost": 57.09,
+      "avg_tests": 1.37,
+      "n_cases": 43
+    },
+    {
+      "config": "budget_$200",
+      "accuracy": 0.9275,
+      "avg_cost": 97.83,
+      "avg_tests": 1.78,
+      "n_cases": 69
+    },
+    {
+      "config": "budget_$500",
+      "accuracy": 0.95,
+      "avg_cost": 161.75,
+      "avg_tests": 2.27,
+      "n_cases": 100
+    }
+  ]
+}

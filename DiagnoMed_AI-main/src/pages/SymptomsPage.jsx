@@ -4,6 +4,10 @@ import { useNavigate } from "react-router-dom";
 
 export default function SymptomsPage() {
   const [symptoms, setSymptoms] = useState("");
+  const [region, setRegion] = useState("Global");
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [familyHistory, setFamilyHistory] = useState("");
+  const [geneticVariants, setGeneticVariants] = useState("");
   const navigate = useNavigate();
 
   const quickSymptoms = [
@@ -20,8 +24,13 @@ export default function SymptomsPage() {
     e.preventDefault();
     if (!symptoms.trim()) return;
 
-    // Save to localStorage so UploadScansPage can read it
+    // Save to localStorage
     localStorage.setItem("symptoms", symptoms);
+    localStorage.setItem("patientRegion", region);
+    localStorage.setItem("symptomMonth", month);
+    localStorage.setItem("familyHistory", familyHistory);
+    localStorage.setItem("geneticVariants", geneticVariants);
+
     // Navigate to scan upload page
     navigate("/upload-scans");
   };
@@ -31,8 +40,20 @@ export default function SymptomsPage() {
       alert("Please enter your symptoms first");
       return;
     }
-    // Save symptoms and navigate to interactive diagnosis
+    // Save symptoms and clear any stale CNN data
     localStorage.setItem("symptoms", symptoms);
+    localStorage.setItem("patientRegion", region);
+    localStorage.setItem("symptomMonth", month);
+    localStorage.setItem("familyHistory", familyHistory);
+    localStorage.setItem("geneticVariants", geneticVariants);
+
+    // Clear stale analysis data
+    localStorage.removeItem("cnnPredictions");
+    localStorage.removeItem("imageUrl");
+    localStorage.removeItem("gradcamUrl");
+    localStorage.removeItem("diagnosisCaseId");
+    localStorage.removeItem("diagnosisSessionId");
+
     navigate("/diagnosis-flow");
   };
 
@@ -98,6 +119,65 @@ export default function SymptomsPage() {
           required
           className="w-full p-4 border border-gray-300 rounded-xl resize-none focus:outline-none focus:ring-2 focus:ring-blue-400 transition placeholder-gray-400 !text-black"
         />
+
+        {/* Contextual Factors */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Region</label>
+            <select
+              value={region}
+              onChange={(e) => setRegion(e.target.value)}
+              className="w-full p-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 !text-black"
+            >
+              <option value="Global">Global / Other</option>
+              <option value="North America">North America</option>
+              <option value="South America">South America</option>
+              <option value="Europe">Europe</option>
+              <option value="Africa">Africa</option>
+              <option value="South Asia">South Asia</option>
+              <option value="East Asia">East Asia</option>
+              <option value="Southeast Asia">Southeast Asia</option>
+              <option value="Middle East">Middle East</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Month of Onset</label>
+            <select
+              value={month}
+              onChange={(e) => setMonth(parseInt(e.target.value))}
+              className="w-full p-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 !text-black"
+            >
+              {Array.from({ length: 12 }, (_, i) => (
+                <option key={i + 1} value={i + 1}>
+                  {new Date(0, i).toLocaleString('default', { month: 'long' })}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Family History (Optional)</label>
+            <input
+              type="text"
+              value={familyHistory}
+              onChange={(e) => setFamilyHistory(e.target.value)}
+              placeholder="e.g. Diabetes, Hypertension"
+              className="w-full p-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 !text-black"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Genetic Variants (Optional)</label>
+            <input
+              type="text"
+              value={geneticVariants}
+              onChange={(e) => setGeneticVariants(e.target.value)}
+              placeholder="e.g. rs1800562, rs12345"
+              className="w-full p-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 !text-black"
+            />
+          </div>
+        </div>
 
         <div className="flex gap-4">
           <button

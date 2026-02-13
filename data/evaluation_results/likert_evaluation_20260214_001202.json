@@ -1,0 +1,99 @@
+{
+  "timestamp": "2026-02-14T00:12:02.021914",
+  "sample_size": {
+    "total_responses": 50,
+    "unique_clinicians": 20
+  },
+  "overall": {
+    "mean": 3.985,
+    "std": 0.803,
+    "cronbach_alpha": 0
+  },
+  "dimensions": [
+    {
+      "dimension": "Diagnostic Accuracy",
+      "n": 150,
+      "mean": 3.98,
+      "std": 0.807,
+      "median": 4.0,
+      "range": [
+        2,
+        5
+      ],
+      "ci_95": [
+        3.851,
+        4.109
+      ]
+    },
+    {
+      "dimension": "Test Ordering Appropriateness",
+      "n": 150,
+      "mean": 3.92,
+      "std": 0.799,
+      "median": 4.0,
+      "range": [
+        2,
+        5
+      ],
+      "ci_95": [
+        3.792,
+        4.048
+      ]
+    },
+    {
+      "dimension": "Cost-Effectiveness",
+      "n": 150,
+      "mean": 3.98,
+      "std": 0.755,
+      "median": 4.0,
+      "range": [
+        2,
+        5
+      ],
+      "ci_95": [
+        3.859,
+        4.101
+      ]
+    },
+    {
+      "dimension": "Clinical Utility",
+      "n": 150,
+      "mean": 3.947,
+      "std": 0.858,
+      "median": 4.0,
+      "range": [
+        1,
+        5
+      ],
+      "ci_95": [
+        3.809,
+        4.084
+      ]
+    },
+    {
+      "dimension": "Patient Safety",
+      "n": 150,
+      "mean": 4.1,
+      "std": 0.792,
+      "median": 4.0,
+      "range": [
+        1,
+        5
+      ],
+      "ci_95": [
+        3.973,
+        4.227
+      ]
+    }
+  ],
+  "demographics": {
+    "specialties": {
+      "Infectious Disease": 10,
+      "Emergency Medicine": 13,
+      "Family Practice": 11,
+      "Internal Medicine": 7,
+      "Pulmonology": 9
+    },
+    "mean_experience_years": 13.1
+  }
+}
